@@ -137,7 +137,7 @@ class Player:
 class Enemy:
     def __init__(self, game, world_x, world_y):
         self.game = game
-        img_choice = random.choice(['police1.png', 'police2.png'])
+        img_choice = random.choice(['police.png', 'police2.png'])
         self.image, self.rect = load_image(img_choice, scale=1.5)
         self.base_image = self.image
         
