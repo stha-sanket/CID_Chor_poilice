@@ -2,6 +2,7 @@ import pygame
 import sys
 import random
 import time
+import os
 
 # --- Constants ---
 WIDTH, HEIGHT = 1024, 576
@@ -15,37 +16,52 @@ YELLOW = (255, 255, 0)
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 
-GRAVITY = 0.8
-PLAYER_MAX_SPEED = 7.0
-JUMP_STRENGTH = -15
+GRAVITY = 0.7
+PLAYER_MAX_SPEED = 6.0
+JUMP_STRENGTH = -16
 GROUND_Y = HEIGHT - 80
+
+ASSETS_DIR = 'assets'
+
+# --- Helper Functions ---
+def load_image(name, scale=1):
+    """Loads an image, scales it, and handles transparency."""
+    fullname = os.path.join(ASSETS_DIR, name)
+    try:
+        image = pygame.image.load(fullname)
+    except pygame.error as message:
+        print('Cannot load image:', name)
+        raise SystemExit(message)
+    image = image.convert_alpha()
+    size = image.get_size()
+    scaled_size = (int(size[0] * scale), int(size[1] * scale))
+    image = pygame.transform.scale(image, scaled_size)
+    return image, image.get_rect()
 
 # --- Game Classes ---
 
 class Player:
     def __init__(self, game):
         self.game = game
-        self.w = 32
-        self.h = 48
+        self.image, self.rect = load_image('chor.png', scale=1.5)
+        self.base_image = self.image
         self.world_x = 200.0
-        self.world_y = GROUND_Y - self.h
+        self.world_y = GROUND_Y - self.rect.height
         self.vel_x = 0.0
         self.vel_y = 0.0
         self.on_ground = True
+        self.direction = 1 # 1 for right, -1 for left
         self.invincible = False
         self.invincible_end_time = 0.0
-        self.rect = pygame.Rect(0, 0, self.w, self.h)
 
-    def move_x(self, dx):
+    def move(self, dx, dy):
         self.rect.x += dx
         for solid in self.game.platforms:
             if self.rect.colliderect(solid):
                 if dx > 0: self.rect.right = solid.left
                 elif dx < 0: self.rect.left = solid.right
                 self.vel_x = 0.0
-        self.world_x = self.rect.x
-
-    def move_y(self, dy):
+        
         self.rect.y += dy
         self.on_ground = False
         for solid in self.game.platforms:
@@ -57,18 +73,25 @@ class Player:
                 elif dy < 0:
                     self.rect.top = solid.bottom
                     self.vel_y = 0.0
+        
+        self.world_x = self.rect.x
         self.world_y = self.rect.y
 
     def update(self, dt):
         keys = pygame.key.get_pressed()
-        accel = 40.0 * dt
+        accel = 50.0 * dt
 
         # --- Movement ---
-        if keys[pygame.K_RIGHT] or keys[pygame.K_d]: self.vel_x += accel
-        if keys[pygame.K_LEFT] or keys[pygame.K_a]: self.vel_x -= accel
-        self.vel_x += 15.0 * dt  # Auto-run
-        self.vel_x = max(-PLAYER_MAX_SPEED * 0.4, min(self.vel_x, PLAYER_MAX_SPEED))
-        self.vel_x *= 0.92
+        target_vel_x = 0
+        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+            target_vel_x = PLAYER_MAX_SPEED
+            self.direction = 1
+        elif keys[pygame.K_LEFT] or keys[pygame.K_a]:
+            target_vel_x = -PLAYER_MAX_SPEED
+            self.direction = -1
+        
+        # Smooth acceleration/deceleration
+        self.vel_x += (target_vel_x - self.vel_x) * 0.3
 
         if (keys[pygame.K_SPACE] or keys[pygame.K_UP] or keys[pygame.K_w]) and self.on_ground:
             self.vel_y = JUMP_STRENGTH
@@ -78,14 +101,7 @@ class Player:
 
         # --- Position & Collision Update ---
         self.rect.topleft = (self.world_x, self.world_y)
-        self.move_x(self.vel_x * dt * 60)
-        self.move_y(self.vel_y * dt * 60)
-
-        if self.world_y > GROUND_Y - self.h:
-            self.world_y = GROUND_Y - self.h
-            self.rect.y = self.world_y
-            self.vel_y = 0.0
-            self.on_ground = True
+        self.move(self.vel_x * dt * 60, self.vel_y * dt * 60)
 
         # --- Collisions with items/enemies ---
         self.check_collisions()
@@ -93,6 +109,12 @@ class Player:
         # --- Power-up Timer ---
         if self.invincible and time.time() > self.invincible_end_time:
             self.invincible = False
+            
+        # --- Flip Image ---
+        if self.direction == -1:
+            self.image = pygame.transform.flip(self.base_image, True, False)
+        else:
+            self.image = self.base_image
 
     def check_collisions(self):
         # Enemies
@@ -102,52 +124,40 @@ class Player:
                     self.game.enemies.remove(enemy)
                     self.game.score += 100
                     continue
-                # Stomp
                 if self.vel_y > 1 and self.rect.bottom < enemy.rect.centery + 10:
                     self.game.enemies.remove(enemy)
                     self.game.score += 50
                     self.vel_y = JUMP_STRENGTH * 0.6
-                else: # Caught
+                else: 
                     self.game.state = 'game_over'
-
-        # Coins
-        for coin in self.game.coins[:]:
-            if self.rect.colliderect(coin):
-                self.game.coins.remove(coin)
-                self.game.score += 10
-
-        # Power-ups
-        for pu in self.game.power_ups[:]:
-            if self.rect.colliderect(pu):
-                self.game.power_ups.remove(pu)
-                self.invincible = True
-                self.invincible_end_time = time.time() + 5.0
 
     def get_screen_pos(self, camera_x):
         return int(self.world_x - camera_x), int(self.world_y)
 
 class Enemy:
-    def __init__(self, game, world_x):
+    def __init__(self, game, world_x, world_y):
         self.game = game
-        self.w = 28
-        self.h = 40
+        img_choice = random.choice(['police1.png', 'police2.png'])
+        self.image, self.rect = load_image(img_choice, scale=1.5)
+        self.base_image = self.image
+        
         self.world_x = world_x
-        self.world_y = GROUND_Y - self.h
+        self.world_y = world_y
+        self.rect.topleft = (world_x, world_y)
+        
         self.vel_x = 0.0
         self.vel_y = 0.0
         self.on_ground = True
-        self.rect = pygame.Rect(0, 0, self.w, self.h)
+        self.direction = -1
 
-    def move_x(self, dx):
+    def move(self, dx, dy):
         self.rect.x += dx
         for solid in self.game.platforms:
             if self.rect.colliderect(solid):
                 if dx > 0: self.rect.right = solid.left
                 elif dx < 0: self.rect.left = solid.right
                 self.vel_x = 0.0
-        self.world_x = self.rect.x
-
-    def move_y(self, dy):
+        
         self.rect.y += dy
         self.on_ground = False
         for solid in self.game.platforms:
@@ -159,28 +169,49 @@ class Enemy:
                 elif dy < 0:
                     self.rect.top = solid.bottom
                     self.vel_y = 0.0
+        
+        self.world_x = self.rect.x
         self.world_y = self.rect.y
 
     def update(self, dt):
-        target_vel = PLAYER_MAX_SPEED + 1.5 + (self.game.level * 0.4)
-        if self.game.player.world_x > self.world_x:
-            self.vel_x += 25.0 * dt
-            self.vel_x = min(self.vel_x, target_vel)
-        else:
-            self.vel_x -= 15.0 * dt
-        self.vel_x *= 0.95
+        # --- AI Logic ---
+        player = self.game.player
+        
+        # Horizontal chase
+        dist_x = player.world_x - self.world_x
+        if dist_x > 5:
+            self.vel_x += 0.5
+            self.direction = 1
+        elif dist_x < -5:
+            self.vel_x -= 0.5
+            self.direction = -1
+        
+        self.vel_x = max(-4, min(self.vel_x, 4)) # Clamp speed
+        self.vel_x *= 0.95 # Friction
 
+        # Jumping AI
+        if self.on_ground:
+            # 1. Jump if player is above
+            if player.world_y < self.world_y - 50 and abs(dist_x) < 200:
+                self.vel_y = JUMP_STRENGTH * 0.8
+            # 2. Jump if a wall is in the way
+            else:
+                probe_x = self.rect.centerx + (self.direction * 40)
+                for plat in self.game.platforms:
+                    if plat.collidepoint(probe_x, self.rect.centery):
+                        self.vel_y = JUMP_STRENGTH * 0.9
+                        break
+
+        # --- Physics and Movement ---
         self.vel_y += GRAVITY * dt * 60
-
         self.rect.topleft = (self.world_x, self.world_y)
-        self.move_x(self.vel_x * dt * 60)
-        self.move_y(self.vel_y * dt * 60)
-
-        if self.world_y > GROUND_Y - self.h:
-            self.world_y = GROUND_Y - self.h
-            self.rect.y = self.world_y
-            self.vel_y = 0.0
-            self.on_ground = True
+        self.move(self.vel_x * dt * 60, self.vel_y * dt * 60)
+        
+        # --- Flip Image ---
+        if self.direction == -1:
+            self.image = pygame.transform.flip(self.base_image, True, False)
+        else:
+            self.image = self.base_image
 
     def get_screen_pos(self, camera_x):
         return int(self.world_x - camera_x), int(self.world_y)
@@ -189,24 +220,40 @@ class Game:
     def __init__(self):
         pygame.init()
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
-        pygame.display.set_caption("Chor Police Mario Adventure")
+        pygame.display.set_caption("Chor Police Adventure")
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont(None, 36)
         self.large_font = pygame.font.SysFont(None, 72)
         self.running = True
         self.state = 'start_screen'
         self.high_score = 0
+        self.camera_x = 0
+
+    def create_level(self):
+        self.platforms = []
+        # Ground floor
+        for i in range(0, 2000, 100):
+            self.platforms.append(pygame.Rect(i, GROUND_Y, 100, 100))
+        
+        # Some platforms
+        level_layout = [
+            (500, GROUND_Y - 100, 200, 20),
+            (800, GROUND_Y - 200, 150, 20),
+            (1100, GROUND_Y - 150, 100, 20),
+            (1400, GROUND_Y - 250, 200, 150),
+            (1600, GROUND_Y - 100, 100, 20),
+        ]
+        for plat in level_layout:
+            self.platforms.append(pygame.Rect(plat))
 
     def reset(self):
+        self.create_level()
         self.player = Player(self)
-        self.platforms = []
-        self.enemies = [Enemy(self, 50), Enemy(self, -100)]
-        self.coins = []
-        self.power_ups = []
+        self.enemies = [
+            Enemy(self, 800, GROUND_Y - 40),
+            Enemy(self, 1450, GROUND_Y - 250 - 40)
+        ]
         self.score = 0
-        self.level = 1
-        self.spawn_timer = 0.0
-        self.camera_x = 0
         self.state = 'playing'
 
     def run(self):
@@ -215,6 +262,8 @@ class Game:
             self.handle_events()
             self.update()
             self.draw()
+        pygame.quit()
+        sys.exit()
 
     def handle_events(self):
         for event in pygame.event.get():
@@ -229,109 +278,38 @@ class Game:
     def update(self):
         if self.state != 'playing':
             return
-
-        # Updates
         self.player.update(self.dt)
-        for enemy in self.enemies[:]:
+        for enemy in self.enemies:
             enemy.update(self.dt)
-            if enemy.world_x < self.player.world_x - 1000:
-                self.enemies.remove(enemy)
-
-        # World Generation
-        self.generate_world()
-
-        # Level up
-        new_level = 1 + int(self.player.world_x / 20000)
-        if new_level > self.level:
-            self.level = new_level
-
-        # Camera
         self.camera_x = self.player.world_x - WIDTH // 3
-
-    def generate_world(self):
-        # Platforms
-        if len(self.platforms) < 20 or self.platforms[-1].x < self.player.world_x + 1000:
-            x = self.player.world_x + random.randint(600, 1200)
-            if random.random() < 0.7:
-                h = random.randint(40, 70)
-                self.platforms.append(pygame.Rect(x, GROUND_Y - h, random.randint(50, 90), h))
-            else:
-                self.platforms.append(pygame.Rect(x, GROUND_Y - random.randint(100, 220), random.randint(70, 140), 20))
-        self.platforms = [p for p in self.platforms if p.right > self.player.world_x - 500]
-
-        # Coins
-        if len(self.coins) < 12 and random.random() < 0.015:
-            x = self.player.world_x + random.randint(400, 1000)
-            y = GROUND_Y - random.randint(40, 200)
-            self.coins.append(pygame.Rect(x, y, 16, 16))
-        self.coins = [c for c in self.coins if c.right > self.player.world_x - 500]
-
-        # Power-ups
-        if len(self.power_ups) == 0 and random.random() < 0.0008:
-            x = self.player.world_x + random.randint(1500, 2500)
-            y = GROUND_Y - random.randint(60, 180)
-            self.power_ups.append(pygame.Rect(x, y, 24, 24))
-        self.power_ups = [pu for pu in self.power_ups if pu.right > self.player.world_x - 500]
-
-        # Enemies
-        self.spawn_timer += self.dt
-        spawn_interval = max(2.0 - self.level * 0.15, 0.8)
-        if self.spawn_timer > spawn_interval:
-            self.spawn_timer = 0.0
-            spawn_x = self.player.world_x - random.randint(250, 450)
-            self.enemies.append(Enemy(self, spawn_x))
 
     def draw(self):
         self.screen.fill(SKY_BLUE)
         if self.state == 'start_screen':
             self.draw_start_screen()
-        elif self.state == 'playing':
+        else: # Draw game world for both 'playing' and 'game_over'
             self.draw_game()
-        elif self.state == 'game_over':
-            self.draw_game() # Draw final frame
-            self.draw_game_over_screen()
+            if self.state == 'game_over':
+                self.draw_game_over_screen()
         pygame.display.flip()
 
     def draw_game(self):
-        # Ground
-        pygame.draw.rect(self.screen, GREEN, (0, GROUND_Y, WIDTH, HEIGHT - GROUND_Y))
-
         # Platforms
         for plat in self.platforms:
             sx = plat.x - self.camera_x
             pygame.draw.rect(self.screen, BROWN, (sx, plat.y, plat.width, plat.height))
-            pygame.draw.line(self.screen, BRICK_LINE, (sx, plat.y + 8), (sx + plat.width, plat.y + 8), 2)
-
-        # Items
-        for coin in self.coins:
-            sx = coin.x - self.camera_x
-            pygame.draw.rect(self.screen, YELLOW, (sx, coin.y, 16, 16))
-            pygame.draw.rect(self.screen, WHITE, (sx + 4, coin.y + 4, 8, 8))
-        for pu in self.power_ups:
-            sx = pu.x - self.camera_x
-            pygame.draw.rect(self.screen, GREEN, (sx, pu.y, 24, 24))
-            pygame.draw.rect(self.screen, WHITE, (sx + 6, pu.y + 6, 12, 12))
 
         # Enemies
         for enemy in self.enemies:
             sx, sy = enemy.get_screen_pos(self.camera_x)
-            pygame.draw.rect(self.screen, RED, (sx, sy, enemy.w, enemy.h))
+            self.screen.blit(enemy.image, (sx, sy))
 
         # Player
         px, py = self.player.get_screen_pos(self.camera_x)
-        color = BLUE
-        if self.player.invincible:
-            color = YELLOW if int(time.time() * 10) % 2 else GREEN
-        pygame.draw.rect(self.screen, color, (px, py, self.player.w, self.player.h))
-        pygame.draw.circle(self.screen, WHITE, (px + 8, py + 12), 5)
-        pygame.draw.circle(self.screen, WHITE, (px + 20, py + 12), 5)
-        pygame.draw.circle(self.screen, BLACK, (px + 9, py + 13), 2)
-        pygame.draw.circle(self.screen, BLACK, (px + 21, py + 13), 2)
+        self.screen.blit(self.player.image, (px, py))
 
         # UI
-        distance = int(self.player.world_x / 10)
-        total_score = self.score + distance
-        ui_text = self.font.render(f"Score: {total_score}  Level: {self.level}  Distance: {distance // 10}m", True, BLACK)
+        ui_text = self.font.render(f"Score: {self.score}", True, BLACK)
         self.screen.blit(ui_text, (10, 10))
 
     def draw_start_screen(self):
@@ -341,12 +319,9 @@ class Game:
         self.screen.blit(prompt, (WIDTH // 2 - prompt.get_width() // 2, HEIGHT // 2 + 20))
 
     def draw_game_over_screen(self):
-        distance = int(self.player.world_x / 10)
-        total_score = self.score + distance
-        self.high_score = max(self.high_score, total_score)
-
+        self.high_score = max(self.high_score, self.score)
         over_text = self.large_font.render("CAUGHT! GAME OVER", True, RED)
-        final_score = self.font.render(f"Final Score: {total_score}  High: {self.high_score}", True, BLACK)
+        final_score = self.font.render(f"Final Score: {self.score}  High: {self.high_score}", True, BLACK)
         restart_text = self.font.render("Press R to Restart", True, BLACK)
         self.screen.blit(over_text, (WIDTH // 2 - over_text.get_width() // 2, HEIGHT // 2 - 100))
         self.screen.blit(final_score, (WIDTH // 2 - final_score.get_width() // 2, HEIGHT // 2 - 20))
@@ -356,5 +331,3 @@ class Game:
 if __name__ == '__main__':
     game = Game()
     game.run()
-    pygame.quit()
-    sys.exit()
